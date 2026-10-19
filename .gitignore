@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 运行时产物
+state.json
+*.log
+assets/*.png
+# assets/*.gif 是 README 演示素材，保留入库
+
+# 系统文件
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/

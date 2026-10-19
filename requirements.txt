@@ -1,0 +1,4 @@
+# 依赖清单
+
+hidapi>=0.14.0      # HID 底层（Mac 用 IOHIDManager / Win 用 HidD_* / Linux 用 hidraw）
+Pillow>=10.0.0      # 图案渲染 PNG/GIF（仅 check 命令需要）

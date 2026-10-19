@@ -1,0 +1,34 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "/Users/benny/ClaudeCodeWorkspace/yogo-agent-signal/hooks/claude-code/on-tool-start.sh" }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "/Users/benny/ClaudeCodeWorkspace/yogo-agent-signal/hooks/claude-code/on-permission-request.sh" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/Users/benny/ClaudeCodeWorkspace/yogo-agent-signal/hooks/claude-code/on-stop.sh" }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/Users/benny/ClaudeCodeWorkspace/yogo-agent-signal/hooks/claude-code/on-session-end.sh" }
+        ]
+      }
+    ]
+  }
+}
