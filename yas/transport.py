@@ -47,21 +47,36 @@ class HIDTransport:
     def open(self) -> bool:
         import hid
         try:
-            candidates = [i for i in hid.enumerate(self.vid, 0)
-                          if getattr(i, "usage_page", 0) == protocol.VENDOR_USAGE_PAGE
-                          or getattr(i, "usage", 0) == protocol.VENDOR_USAGE_PAGE]
-            # 若按 usage_page 过滤不到（依赖 hidapi 版本），退化为拿第一个 VID 匹配设备
+            # hid.enumerate 返回的是 dict 列表（不是对象），必须用 .get()
+            all_devs = list(hid.enumerate(self.vid, 0))
+            candidates = [d for d in all_devs
+                          if d.get("usage_page") == protocol.VENDOR_USAGE_PAGE]
+            # 若按 usage_page 过滤不到（依赖 hidapi 版本），退化为按 usage 匹配
             if not candidates:
-                candidates = list(hid.enumerate(self.vid, 0))
+                candidates = [d for d in all_devs
+                              if d.get("usage") == protocol.VENDOR_USAGE_PAGE]
             if not candidates:
                 raise TransportError(
-                    "没找到 VID 0x373B 的设备。请确认键盘已开机且处于 2.4G 或有线档。")
-            info = candidates[0]
-            self.dev = hid.device()
-            self.dev.open_path(info["path"])
-            self.path = info["path"]
-            self._seq = 0
-            return True
+                    "没找到点阵屏厂商通道（usage page 0xFF60）。"
+                    "请确认键盘已开机且处于 2.4G 或有线档（蓝牙模式不支持控制）。")
+
+            # 挨个试打开：同一把键盘可能同时枚举出有线口和接收器口，
+            # 其中只有后面真挂着键盘的那个能打开。
+            errors = []
+            for info in candidates:
+                try:
+                    dev = hid.device()
+                    dev.open_path(info["path"])
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"{info['path']}: {e}")
+                    continue
+                self.dev = dev
+                self.path = info["path"]
+                self._seq = 0
+                return True
+            raise TransportError(
+                "厂商通道存在但打不开（可能是权限或连接问题）："
+                + "; ".join(errors[:3]))
         except TransportError:
             raise
         except Exception as e:  # noqa: BLE001
