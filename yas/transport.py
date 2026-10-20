@@ -45,7 +45,11 @@ class HIDTransport:
         return devices
 
     def open(self) -> bool:
-        import hid
+        try:
+            import hid
+        except ImportError as e:
+            raise TransportError(
+                "未安装 hidapi，请先 `pip install -r requirements.txt`") from e
         try:
             # hid.enumerate 返回的是 dict 列表（不是对象），必须用 .get()
             all_devs = list(hid.enumerate(self.vid, 0))
@@ -74,8 +78,10 @@ class HIDTransport:
                 self.path = info["path"]
                 self._seq = 0
                 return True
+            # macOS 上 hidapi 独占打开设备，另一个进程占着时这里必然失败
             raise TransportError(
-                "厂商通道存在但打不开（可能是权限或连接问题）："
+                "厂商通道存在但打不开（可能另一个 yas run 正占用键盘，"
+                "包括被 Ctrl+Z 挂起的；或是权限/连接问题）："
                 + "; ".join(errors[:3]))
         except TransportError:
             raise
@@ -106,9 +112,11 @@ class HIDTransport:
         t0 = time.time()
         while time.time() - t0 < timeout:
             reply = self.dev.read(protocol.PKT, timeout_ms=int(timeout * 1000))
-            if reply and len(reply) > 0:
-                if protocol.seq_of_reply(bytes(reply)) == self._seq:
-                    return bytes(reply)
+            if reply:
+                # macOS/Linux 的 hidapi 会去掉 report id，先统一成 33 字节布局
+                reply = protocol.normalize_reply(reply)
+                if protocol.seq_of_reply(reply) == self._seq:
+                    return reply
         return None
 
     def handshake(self) -> None:
@@ -124,6 +132,48 @@ class HIDTransport:
             self._send(protocol.C_MATRIX, offset, chunk, wait=False)
         self._matrix_last = flat
         self._matrix_t = time.time()
+        return True
+
+    # ── 配置（64 字节，读-改-写）────────────────────────────────
+    def read_config(self) -> bytes:
+        """读 64 字节配置。键盘（尤其走 2.4G）刚醒时第一次常无应答，重试 3 次。"""
+        for attempt in range(3):
+            if attempt:
+                time.sleep(0.25)
+            self._send(protocol.C_HAND, 0, b"", 0)
+            cfg = bytearray(protocol.CONFIG_BYTES)
+            for off, ln in protocol.CONFIG_CHUNKS:
+                r = self._send(protocol.C_READ, off, b"", ln)
+                start = protocol.REPLY_DATA_OFFSET
+                if not r or len(r) < start + ln:
+                    break
+                cfg[off:off + ln] = r[start:start + ln]
+            else:
+                return bytes(cfg)
+        raise TransportError("读键盘配置超时（键盘休眠或没应答）")
+
+    def write_config(self, cfg: bytes) -> None:
+        """整块写回 64 字节配置。调用方必须先 read_config 再改，别凭空构造。"""
+        cfg = bytes(cfg)
+        if len(cfg) != protocol.CONFIG_BYTES:
+            raise ValueError(f"配置必须是 {protocol.CONFIG_BYTES} 字节")
+        self.handshake()
+        self._send(protocol.C_ENDSYNC, 0, b"", 0)
+        for off, ln in protocol.CONFIG_CHUNKS:
+            self._send(protocol.C_WRITE, off, cfg[off:off + ln])
+
+    def ensure_custom_display(self) -> bool:
+        """把点阵屏切到「自定义」模式（dsMode=6），返回是否改动了配置。
+
+        点阵屏在内置模式下会自己画固件效果，cmd 59 推来的帧不显示——
+        推送「成功」但屏上什么都没有。只改这一个字节，亮度等其它设置保持原样。
+        """
+        cfg = bytearray(self.read_config())
+        if cfg[protocol.CFG_DS_MODE] == protocol.DS_CUSTOM:
+            return False
+        cfg[protocol.CFG_DS_MODE] = protocol.DS_CUSTOM
+        self.write_config(bytes(cfg))
+        self._matrix_last = None  # 模式切换后强制重推一帧
         return True
 
     def read_battery(self) -> int | None:

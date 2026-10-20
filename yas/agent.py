@@ -138,10 +138,14 @@ class StateMachine:
                 if self.path != "/state":
                     self._send_json({"ok": False, "error": "not found"}, 404)
                     return
-                length = int(self.headers.get("Content-Length", 0))
-                raw = self.rfile.read(length) if length else b"{}"
                 try:
+                    length = int(self.headers.get("Content-Length", 0))
+                    raw = self.rfile.read(length) if length else b"{}"
                     data = json.loads(raw or b"{}")
+                    if not isinstance(data, dict):
+                        self._send_json(
+                            {"ok": False, "error": "body must be a JSON object"}, 400)
+                        return
                     state = data.get("state")
                     if state not in patterns.VALID_STATES:
                         self._send_json(
@@ -149,20 +153,26 @@ class StateMachine:
                         return
                     machine.set_state(state, source="http")
                     self._send_json({"ok": True, "state": machine.state})
-                except json.JSONDecodeError:
+                except ValueError:
+                    # JSONDecodeError / 非 UTF-8 body / 非法 Content-Length 都是 ValueError
                     self._send_json({"ok": False, "error": "bad json"}, 400)
 
         return Handler
 
 
-def run_server(machine: StateMachine, host: str = "127.0.0.1", port: int = 8787):
+def make_server(machine: StateMachine, host: str = "127.0.0.1", port: int = 8787):
+    """绑定端口并返回 HTTPServer。端口被占用时抛 OSError，由调用方提示。
+
+    单独拆出来是为了让 cli 先占端口、再碰键盘：端口被占通常说明已有一个
+    yas run 在跑，这时应直接退出，而不是带着一个挂掉的 HTTP 线程继续运行。
+    """
     from http.server import HTTPServer
-    handler = machine.make_http_app()
-    server = HTTPServer((host, port), handler)
-    print(f"[yas] HTTP 接口: http://{host}:{port}/state")
+    return HTTPServer((host, port), machine.make_http_app())
+
+
+def run_server(server) -> None:
+    """在当前线程里跑 make_server() 返回的 server，直到进程退出。"""
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        pass
     finally:
         server.server_close()

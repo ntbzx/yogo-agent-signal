@@ -57,6 +57,9 @@ def cmd_probe(args):
     batt = t.read_battery()
     if batt is not None:
         print(f"  电量：{batt}%")
+    if not _ensure_custom_display(t):
+        t.close()
+        return 1
     # 推一帧绿色勾作为连通性测试
     flat = render.frame_to_flat(patterns.done_frame())
     pushed = t.push_matrix(flat)
@@ -65,11 +68,46 @@ def cmd_probe(args):
     return 0
 
 
+def _ensure_custom_display(t) -> bool:
+    """确保点阵屏处于自定义模式，否则推的帧不会显示。返回是否就绪。"""
+    from .transport import TransportError
+
+    try:
+        if t.ensure_custom_display():
+            print(f"  点阵屏已切到自定义模式（dsMode={protocol.DS_CUSTOM}）")
+        else:
+            print("  点阵屏已是自定义模式")
+        return True
+    except TransportError as e:
+        print(f"  ⚠️ 无法切换点阵屏模式：{e}")
+        return False
+
+
 def cmd_run(args):
     import threading
 
-    from .agent import StateMachine, run_server
-    from .transport import DummyTransport, HIDTransport
+    from .agent import StateMachine, make_server, run_server
+    from .transport import DummyTransport, HIDTransport, TransportError
+
+    machine = StateMachine(
+        transport=None,  # 下面选好后端再挂上
+        state_file=args.state_file,
+        fps=args.fps,
+        idle_timeout=args.idle_timeout,
+    )
+
+    # 先占端口、再碰键盘。端口被占多半是已有一个 yas run 在跑（包括被 Ctrl+Z
+    # 挂起的）：它同时独占着键盘，第二个实例打不开设备只能回落模拟后端，
+    # 而 hooks 的信号还会发给那个挂起的进程 —— 表现为「屏幕不动、信号没反应」。
+    try:
+        server = make_server(machine, args.host, args.port)
+    except OSError as e:
+        err = sys.stderr
+        print(f"[yas] ✗ 无法监听 {args.host}:{args.port}（{e.strerror or e}）", file=err)
+        print("      多半已有一个 yas run 在运行，或被 Ctrl+Z 挂起了（挂起的进程仍占着键盘和端口）。", file=err)
+        print(f"      查看：lsof -nP -iTCP:{args.port} -sTCP:LISTEN", file=err)
+        print("      结束：pkill -f 'yas run'; pkill -CONT -f 'yas run'", file=err)
+        return 1
 
     # 选择后端
     if args.dummy:
@@ -77,21 +115,27 @@ def cmd_run(args):
         print("[yas] 使用模拟后端（无键盘）")
     else:
         transport = HIDTransport()
-        if not transport.open():
-            print("[yas] ⚠️ 未检测到键盘，回落到模拟后端")
-            transport = DummyTransport(sink="terminal")
+        # open() 找不到/打不开设备时会抛 TransportError，这里兜住并回落
+        try:
+            opened = transport.open()
+            reason = "" if opened else "未连接"
+        except TransportError as e:
+            opened, reason = False, str(e)
+        if opened:
+            print(f"[yas] 已连接键盘：{transport.path}")
+            # 切换失败也继续跑：键盘可能只是暂时没应答，状态机照常推帧
+            _ensure_custom_display(transport)
+        else:
+            print(f"[yas] ⚠️ 未检测到键盘（{reason}），回落到模拟后端")
+            transport = DummyTransport(sink=args.sink, out_dir=args.out)
 
-    machine = StateMachine(
-        transport=transport,
-        state_file=args.state_file,
-        fps=args.fps,
-        idle_timeout=args.idle_timeout,
-    )
+    machine.transport = transport
 
-    # HTTP 服务器线程
-    server_thread = threading.Thread(
-        target=run_server, args=(machine, args.host, args.port), daemon=True)
+    # HTTP 服务器线程（端口已在上面绑好）
+    server_thread = threading.Thread(target=run_server, args=(server,), daemon=True)
     server_thread.start()
+    print(f"[yas] HTTP 接口: http://{args.host}:{args.port}/state")
+    print("[yas] 按 Ctrl+C 退出（不要用 Ctrl+Z，挂起的进程会一直占着键盘）")
 
     # 主循环
     try:

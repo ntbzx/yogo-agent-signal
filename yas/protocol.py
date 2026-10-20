@@ -27,7 +27,13 @@ PKT = 33            # report id + 32
 MATRIX_BYTES = 108  # 6 * 6 * 3 (RGB)
 MATRIX_PACKETS = 5  # 每包 24 字节，偏移 0/24/48/72/96
 CONFIG_BYTES = 64
+CONFIG_CHUNKS = ((0, 24), (24, 24), (48, 16))  # 读/写配置按这 3 段 (offset, len)
 REPLY_DATA_OFFSET = 9  # 回包有效数据起始字节（含 report id）
+
+# 配置字段偏移（64 字节配置区）
+CFG_DS_MODE = 30    # 点阵屏模式
+CFG_DS_BRIGHT = 31  # 点阵屏亮度
+DS_CUSTOM = 6       # 点阵屏「自定义」模式：只有这个模式下才显示 cmd 59 推来的画面
 
 
 def make_packet(cmd: int, offset: int = 0, payload: bytes = b"", length=None, seq: int = 1) -> bytearray:
@@ -44,6 +50,19 @@ def make_packet(cmd: int, offset: int = 0, payload: bytes = b"", length=None, se
     pl = bytes(payload)[:24]
     pkt[9:9 + len(pl)] = pl
     return pkt
+
+
+def normalize_reply(reply: bytes) -> bytes:
+    """统一回包格式为「含 report id」的 33 字节布局。
+
+    Windows ReadFile 读回来带 report id（首字节 0）；hidapi 在 macOS/Linux
+    上对无编号报告会去掉 report id，读回 32 字节、首字节直接是 0xAA。
+    这里把后者补回 report id，后续 seq/数据偏移就能统一处理。
+    """
+    reply = bytes(reply)
+    if reply and reply[0] == HEADER:
+        return b"\x00" + reply
+    return reply
 
 
 def seq_of_reply(reply: bytes) -> int:

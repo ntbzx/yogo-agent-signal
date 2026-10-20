@@ -16,10 +16,10 @@ fi
 
 # 优先用 python（跨平台），没有则用 curl，再没有则放弃
 if command -v python3 >/dev/null 2>&1; then
-  python3 - "$STATE" <<'PY'
+  python3 - "$STATE" "$HOST" "$PORT" <<'PY'
 import json, sys, urllib.request
-state = sys.argv[1]
-url = "http://127.0.0.1:8787/state"
+state, host, port = sys.argv[1], sys.argv[2], sys.argv[3]
+url = f"http://{host}:{port}/state"
 try:
     req = urllib.request.Request(url, data=json.dumps({"state": state}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
